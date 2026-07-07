@@ -1,0 +1,999 @@
+@workspace
+
+# PROJECT: Code2Arch
+
+You are a Principal Software Architect, Principal Data Engineer, and Software Reverse Engineering expert.
+
+Your task is NOT to write production code yet.
+
+Your task is to completely reverse engineer this repository into a machine-readable architecture model that will later power an interactive architecture explorer similar to roadmap.sh.
+
+Think like someone documenting a Fortune 100 banking platform for engineers joining the team.
+
+Never guess.
+
+Every statement must be backed by evidence from this repository.
+
+Whenever something cannot be resolved statically, explicitly mark it as UNKNOWN and explain why.
+
+Return evidence for every discovery.
+
+Evidence includes:
+
+• file path
+• package
+• Scala object/class/trait
+• method/function
+• line number whenever available
+• confidence (High / Medium / Low)
+
+------------------------------------------------------------
+GOAL
+------------------------------------------------------------
+
+Build a complete architecture model for the reconciliation platform.
+
+The model must answer:
+
+How does reconciliation actually work?
+
+Where does execution start?
+
+How does metadata flow?
+
+Which tables are read?
+
+Which tables are written?
+
+Which Spark jobs execute?
+
+Which classes orchestrate the flow?
+
+Which functions perform reconciliation?
+
+Which functions perform DQ?
+
+Which configs control execution?
+
+Which metadata controls reconciliation?
+
+How does data travel from ingestion until reporting?
+
+How are audit logs generated?
+
+How are failures handled?
+
+How are breaks created?
+
+How are reports generated?
+
+------------------------------------------------------------
+PHASE 1
+Repository Discovery
+------------------------------------------------------------
+
+Analyze the entire repository.
+
+Identify:
+
+• modules
+• packages
+• Maven modules
+• Gradle modules
+• Scala modules
+• Spark applications
+• utilities
+• libraries
+• jobs
+• APIs
+• CLI entry points
+
+Produce:
+
+Repository Tree
+
+Logical Components
+
+Dependency Summary
+
+Architecture Summary
+
+------------------------------------------------------------
+PHASE 2
+Execution Flow
+------------------------------------------------------------
+
+Find every execution entry point.
+
+Look for:
+
+main()
+
+SparkSubmit
+
+SparkLauncher
+
+extends App
+
+Scheduler Jobs
+
+Autosys
+
+CLI
+
+Batch Jobs
+
+REST endpoints
+
+Kafka consumers
+
+Streaming jobs
+
+Return
+
+Entry Point
+
+↓
+
+Next Component
+
+↓
+
+Next Component
+
+↓
+
+Next Component
+
+↓
+
+Final Output
+
+Build the complete execution chain.
+
+------------------------------------------------------------
+PHASE 3
+Scala Inventory
+------------------------------------------------------------
+
+Analyze every Scala file.
+
+For every file return
+
+File
+
+Purpose
+
+Package
+
+Imports
+
+Classes
+
+Objects
+
+Traits
+
+Case Classes
+
+Constants
+
+Fields
+
+Methods
+
+Dependencies
+
+Spark Usage
+
+DataFrames
+
+Datasets
+
+RDD
+
+SQL
+
+Config Usage
+
+Metadata Usage
+
+Tables Used
+
+DQ Usage
+
+Audit Usage
+
+------------------------------------------------------------
+PHASE 4
+Class Architecture
+------------------------------------------------------------
+
+For every class/object/trait
+
+Return
+
+Name
+
+Type
+
+Package
+
+File
+
+Fields
+
+Methods
+
+Constructor
+
+Dependencies
+
+Injected Services
+
+Spark Session Usage
+
+DataFrame Usage
+
+Metadata Usage
+
+Tables Used
+
+Called By
+
+Calls
+
+------------------------------------------------------------
+PHASE 5
+Method Call Graph
+------------------------------------------------------------
+
+For every method
+
+Return
+
+Signature
+
+Inputs
+
+Outputs
+
+Return Type
+
+Calls
+
+Called By
+
+Reads
+
+Writes
+
+Metadata Access
+
+Spark Transformations
+
+SQL
+
+Exceptions
+
+Audit
+
+Logging
+
+DQ
+
+Side Effects
+
+------------------------------------------------------------
+PHASE 6
+Metadata Discovery
+------------------------------------------------------------
+
+Discover every metadata source.
+
+Search for
+
+Metadata
+
+Config
+
+Control
+
+Rule
+
+Rules
+
+Mapping
+
+Schema
+
+Registry
+
+Audit
+
+Recon Config
+
+Recon Metadata
+
+XML
+
+JSON
+
+YAML
+
+Properties
+
+Database Metadata
+
+Hive Metadata
+
+Iceberg Metadata
+
+Return
+
+Metadata Source
+
+Purpose
+
+Type
+
+Tables
+
+Columns
+
+Filters
+
+Joins
+
+Consumers
+
+Producers
+
+Read
+
+Write
+
+Update
+
+Delete
+
+Config Driven
+
+Dynamic
+
+------------------------------------------------------------
+PHASE 7
+Table Lineage
+------------------------------------------------------------
+
+Find every
+
+Hive table
+
+Iceberg table
+
+Oracle table
+
+Mongo collection
+
+Temp View
+
+View
+
+Delta table
+
+CSV
+
+Parquet
+
+JSON
+
+XML
+
+Kafka Topic
+
+S3 Path
+
+HDFS Path
+
+API
+
+For every asset return
+
+Type
+
+Read
+
+Write
+
+Append
+
+Overwrite
+
+Merge
+
+Insert
+
+Delete
+
+Update
+
+Consumers
+
+Producers
+
+Columns
+
+Join Keys
+
+Filters
+
+Aggregations
+
+------------------------------------------------------------
+PHASE 8
+Reconciliation Logic
+------------------------------------------------------------
+
+Reverse engineer reconciliation.
+
+Identify
+
+Matching Logic
+
+Comparison Logic
+
+Join Logic
+
+Business Keys
+
+Composite Keys
+
+Tolerance
+
+Threshold
+
+Duplicate Logic
+
+Hash Logic
+
+Checksum
+
+Record Count
+
+Amount Match
+
+Single Side Break
+
+Double Side Break
+
+Matched
+
+Unmatched
+
+Status Updates
+
+Rule Engine
+
+XML Rules
+
+Metadata Driven Rules
+
+Dynamic Rules
+
+Hardcoded Rules
+
+Return complete reconciliation decision tree.
+
+------------------------------------------------------------
+PHASE 9
+Data Quality
+------------------------------------------------------------
+
+Find every DQ rule.
+
+Null
+
+Duplicate
+
+Freshness
+
+Schema
+
+Domain
+
+Reference
+
+Range
+
+Threshold
+
+Count
+
+Mandatory
+
+Uniqueness
+
+Volume
+
+Checksum
+
+Hash
+
+Failure Logic
+
+Reject Logic
+
+Quarantine
+
+Warning
+
+Audit
+
+------------------------------------------------------------
+PHASE 10
+Configuration
+------------------------------------------------------------
+
+Find
+
+application.conf
+
+reference.conf
+
+yaml
+
+json
+
+properties
+
+Spark Conf
+
+Environment Variables
+
+CLI Parameters
+
+Job Parameters
+
+Database Config
+
+Kafka Config
+
+Iceberg Config
+
+Hive Config
+
+Return
+
+Key
+
+Purpose
+
+Default
+
+Overrides
+
+Consumers
+
+------------------------------------------------------------
+PHASE 11
+Database & SQL
+------------------------------------------------------------
+
+Reverse engineer every SQL.
+
+SELECT
+
+INSERT
+
+UPDATE
+
+DELETE
+
+MERGE
+
+CREATE
+
+DROP
+
+ALTER
+
+Dynamic SQL
+
+Parameterized SQL
+
+Spark SQL
+
+Return
+
+Query
+
+Purpose
+
+Tables
+
+Columns
+
+Joins
+
+Filters
+
+Group By
+
+Window
+
+Consumers
+
+------------------------------------------------------------
+PHASE 12
+Spark Pipeline
+------------------------------------------------------------
+
+Reverse engineer every Spark pipeline.
+
+Input
+
+Read
+
+Transform
+
+Filter
+
+Join
+
+Group
+
+Aggregate
+
+Cache
+
+Persist
+
+Checkpoint
+
+Write
+
+Return DAG.
+
+------------------------------------------------------------
+PHASE 13
+Error Handling
+------------------------------------------------------------
+
+Find
+
+try
+
+catch
+
+recover
+
+Either
+
+Future
+
+Exceptions
+
+Retries
+
+Audit
+
+Logging
+
+Alerts
+
+Email
+
+Notifications
+
+Failures
+
+------------------------------------------------------------
+PHASE 14
+Audit
+------------------------------------------------------------
+
+Find
+
+Audit Tables
+
+Audit Classes
+
+Audit Methods
+
+Status Updates
+
+Job Tracking
+
+Execution Tracking
+
+Metrics
+
+Monitoring
+
+------------------------------------------------------------
+PHASE 15
+Kafka
+------------------------------------------------------------
+
+Find
+
+Kafka Producers
+
+Kafka Consumers
+
+Topics
+
+Serialization
+
+Deserialization
+
+Offsets
+
+Checkpoint
+
+Streaming
+
+------------------------------------------------------------
+PHASE 16
+Dependencies
+------------------------------------------------------------
+
+Produce
+
+Class Dependency Graph
+
+Method Dependency Graph
+
+Package Dependency Graph
+
+Module Dependency Graph
+
+------------------------------------------------------------
+PHASE 17
+Build Architecture JSON
+------------------------------------------------------------
+
+Produce ONE architecture model.
+
+The JSON must contain
+
+project
+
+repository
+
+modules
+
+packages
+
+entryPoints
+
+components
+
+layers
+
+files
+
+classes
+
+traits
+
+objects
+
+methods
+
+callGraph
+
+tables
+
+metadataSources
+
+metadataCalls
+
+sparkJobs
+
+sparkPipelines
+
+dqRules
+
+reconciliationRules
+
+configs
+
+audit
+
+logging
+
+errors
+
+sql
+
+kafka
+
+assets
+
+edges
+
+risks
+
+unknowns
+
+Every node must have
+
+unique id
+
+type
+
+description
+
+source file
+
+evidence
+
+confidence
+
+------------------------------------------------------------
+PHASE 18
+Gap Analysis
+------------------------------------------------------------
+
+List
+
+Unknown runtime values
+
+Dynamic SQL
+
+Reflection
+
+Dynamic Class Loading
+
+Dynamic Tables
+
+Dynamic Config
+
+Environment Variables
+
+Scheduler Dependencies
+
+Database Dependencies
+
+Missing Metadata
+
+Everything requiring runtime inspection.
+
+------------------------------------------------------------
+PHASE 19
+Code2Arch Viewer
+------------------------------------------------------------
+
+DO NOT BUILD YET.
+
+Instead produce a complete specification for an interactive HTML application.
+
+The application will later be generated.
+
+Features required
+
+roadmap.sh inspired UI
+
+Dark Theme
+
+Search
+
+Architecture Layers
+
+Expandable Nodes
+
+Call Graph
+
+Table Lineage
+
+Metadata Graph
+
+DQ Explorer
+
+Recon Rule Explorer
+
+Scala File Explorer
+
+Method Explorer
+
+Dependency Graph
+
+Spark DAG
+
+SQL Explorer
+
+Configuration Explorer
+
+Audit Explorer
+
+Kafka Explorer
+
+Risk Explorer
+
+Unknown Explorer
+
+Evidence Viewer
+
+Impact Analysis
+
+Upstream
+
+Downstream
+
+Cross References
+
+JSON Export
+
+PNG Export
+
+SVG Export
+
+Filtering
+
+Node Highlighting
+
+Mini Map
+
+Breadcrumbs
+
+------------------------------------------------------------
+OUTPUT FORMAT
+------------------------------------------------------------
+
+Produce findings in this order
+
+1 Repository Summary
+
+2 Execution Flow
+
+3 Modules
+
+4 Packages
+
+5 Scala Inventory
+
+6 Class Inventory
+
+7 Method Inventory
+
+8 Metadata
+
+9 Tables
+
+10 SQL
+
+11 Spark
+
+12 Reconciliation
+
+13 Data Quality
+
+14 Audit
+
+15 Kafka
+
+16 Configurations
+
+17 Dependencies
+
+18 Risks
+
+19 Unknowns
+
+20 Architecture JSON
+
+21 Viewer Specification
+
+Never invent information.
+
+Always provide evidence.
+
+Mark unknowns clearly.
+
+This architecture model will become the source for a future repository named:
+
+CODE2ARCH
+
+whose purpose is to automatically generate an interactive architecture portal for enterprise Scala/Spark reconciliation systems.
