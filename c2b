@@ -1,0 +1,132 @@
+@workspace
+
+We already built docs/reconciliation-architecture-viewer.html.
+
+Now add a ChatGPT-like AI assistant to the Code2Arch architecture viewer.
+
+Important:
+Do NOT call GitHub Models or Copilot model APIs directly from browser JavaScript because the GitHub token must not be exposed.
+
+Implement a small backend API that the HTML page can call.
+
+Required architecture:
+
+1. Frontend:
+   docs/reconciliation-architecture-viewer.html
+
+2. Backend:
+   server/code2arch-assistant-server.js
+
+3. Environment:
+   GITHUB_TOKEN must be read from process.env.GITHUB_TOKEN
+   MODEL_NAME must be read from process.env.MODEL_NAME
+   Default model can be openai/gpt-4.1-mini
+
+4. Backend endpoint:
+   POST /api/chat
+
+5. Request payload from frontend:
+   {
+     "question": "user question",
+     "selectedNode": {...},
+     "architectureContext": {...}
+   }
+
+6. Backend behavior:
+   - Receive user question
+   - Load architecture model from docs/architecture-model.json if available
+   - Combine:
+     user question
+     selected node
+     relevant architecture model context
+   - Send prompt to GitHub Models chat completions API
+   - Return the assistant response to frontend
+
+7. GitHub Models endpoint:
+   POST https://models.github.ai/inference/chat/completions
+
+8. Headers:
+   Authorization: Bearer ${GITHUB_TOKEN}
+   Content-Type: application/json
+
+9. Body:
+   {
+     "model": process.env.MODEL_NAME || "openai/gpt-4.1-mini",
+     "messages": [
+       {
+         "role": "system",
+         "content": "You are Code2Arch AI Assistant. Explain enterprise Scala/Spark reconciliation architecture using only the provided architecture model. If something is unknown, say UNKNOWN. Do not hallucinate."
+       },
+       {
+         "role": "user",
+         "content": "<question + selected node + relevant architecture context>"
+       }
+     ],
+     "temperature": 0.2,
+     "max_tokens": 1200
+   }
+
+10. Frontend changes:
+   Add a right-bottom floating assistant panel:
+   - Chat icon
+   - Open/close
+   - Chat history
+   - Input box
+   - Send button
+   - Loading state
+   - Error state
+   - Clear chat button
+
+11. Assistant features:
+   - Explain selected node
+   - Explain upstream/downstream
+   - Explain metadata calls
+   - Explain which tables are hit
+   - Explain DQ checks
+   - Explain reconciliation rule
+   - Explain Scala class/function
+   - Explain risk/unknown
+   - Generate onboarding explanation for a fresher
+   - Generate senior engineer summary
+   - Generate debugging path
+
+12. Add quick action buttons:
+   - Explain this node
+   - Show upstream/downstream
+   - Explain metadata flow
+   - Explain tables hit
+   - Explain DQ checks
+   - Explain risk
+   - Summarize for new joiner
+
+13. Backend must include:
+   - express
+   - cors
+   - dotenv
+   - node-fetch or native fetch if Node version supports it
+   - proper error handling
+   - no token logging
+   - request size limit
+   - health endpoint GET /health
+
+14. Add package.json scripts:
+   "start": "node server/code2arch-assistant-server.js"
+
+15. Add .env.example:
+   GITHUB_TOKEN=your_github_token_here
+   MODEL_NAME=openai/gpt-4.1-mini
+   PORT=3000
+
+16. Add README section:
+   How to run:
+   npm install
+   cp .env.example .env
+   export GITHUB_TOKEN=...
+   npm start
+   open http://localhost:3000/docs/reconciliation-architecture-viewer.html
+
+17. The backend should serve static files from project root so the HTML works from localhost.
+
+18. Do not modify production reconciliation code.
+
+Implement this cleanly and provide the files changed.
