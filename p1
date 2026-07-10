@@ -1,0 +1,142 @@
+Act as a senior Kafka platform engineer.
+
+Do not work on Avro parsing yet.
+
+Our immediate goal is only to validate whether the existing Kafka source connection is reachable and whether we can receive raw messages using the keys, certificates, truststore, keystore, SASL configuration, or credentials already present in the codebase.
+
+Inspect the current repository and identify the existing class that:
+- loads Kafka server details
+- loads authentication keys or certificates
+- creates the Kafka consumer
+- connects to the configured broker
+- subscribes or assigns to the topic
+
+Do not create a completely new implementation unless required.
+Prefer adding a small test class around the existing connection logic.
+
+Tasks:
+
+1. Identify the exact existing classes, methods, and configuration files responsible for:
+   - bootstrap servers
+   - topic name
+   - security protocol
+   - SASL mechanism
+   - username/password or IAM settings
+   - truststore path/password
+   - keystore path/password
+   - SSL certificates
+   - consumer group
+   - offset configuration
+
+2. Confirm whether the application is using:
+   - SASL_SSL
+   - SSL
+   - SASL_PLAINTEXT
+   - mTLS
+   - AWS MSK IAM
+   - another custom authentication method
+
+3. Create a standalone test class, preferably named:
+
+   KafkaSourceConnectivityTest
+
+4. The test must reuse the existing production Kafka configuration and connection-building logic.
+
+5. The test should perform only these checks:
+
+   A. Create the Kafka consumer successfully.
+
+   B. Connect to the configured Kafka cluster.
+
+   C. Fetch cluster metadata.
+
+   D. Confirm the configured topic exists.
+
+   E. List topic partitions.
+
+   F. Retrieve earliest and latest offsets for every partition.
+
+   G. Attempt to read at least one raw message from the topic.
+
+6. Use a temporary unique consumer group and set:
+
+   enable.auto.commit=false
+
+7. Do not change, reset, or commit offsets for the actual application consumer group.
+
+8. Try reading:
+   - first from the latest available offset
+   - if no message is returned, try from the earliest available offset
+
+9. Do not deserialize Avro yet.
+
+Use:
+
+   ByteArrayDeserializer
+
+for both key and value so the test validates only message reachability.
+
+10. Print only safe diagnostic information:
+
+   - connection success or failure
+   - cluster ID
+   - broker count
+   - topic name
+   - partition number
+   - earliest offset
+   - latest offset
+   - message available: yes/no
+   - message offset
+   - timestamp
+   - key size
+   - payload size
+   - Kafka header names
+
+Do not print:
+- passwords
+- access keys
+- secret keys
+- truststore passwords
+- keystore passwords
+- full payload contents
+- sensitive headers
+
+11. Add clear error classification:
+
+   - CONFIGURATION_MISSING
+   - DNS_RESOLUTION_FAILED
+   - BROKER_UNREACHABLE
+   - SSL_HANDSHAKE_FAILED
+   - AUTHENTICATION_FAILED
+   - AUTHORIZATION_FAILED
+   - TOPIC_NOT_FOUND
+   - TOPIC_EMPTY
+   - MESSAGE_RECEIVED
+   - UNKNOWN_ERROR
+
+12. Add connection and poll timeouts so the test does not wait indefinitely.
+
+13. Before changing code, provide:
+
+   - existing Kafka connection class name
+   - exact method used to create the consumer
+   - configuration file paths
+   - authentication mechanism found
+   - topic configuration source
+   - proposed test class location
+   - exact IntelliJ run steps
+   - required program arguments or VM options
+
+14. After the analysis, generate the test class.
+
+Expected result:
+
+We should be able to answer only these questions:
+
+1. Are the Kafka servers reachable?
+2. Are the configured credentials or keys working?
+3. Does the topic exist?
+4. Are messages currently present?
+5. Can this application read at least one raw message?
+
+Do not implement schema retrieval, Avro deserialization, flattening, or file processing in this step.
