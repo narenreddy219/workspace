@@ -1,0 +1,83 @@
+Act as a senior Scala/Spark data platform engineer and inspect this entire Data Connector codebase.
+
+We receive Kafka messages in Confluent Avro format. The first 5 bytes contain:
+- 1-byte magic byte
+- 4-byte schema ID
+
+The remaining bytes contain the Avro payload.
+
+Our expected flow is:
+
+Kafka message
+→ read schema ID from the first 5 bytes
+→ fetch the Avro schema from Schema Registry
+→ decode the Avro payload using from_avro
+→ flatten nested structs, arrays, maps, and nullable union fields
+→ apply schema-derived field names as CSV headers
+→ write the final CSV to HDFS
+
+Inspect these classes first:
+
+- DataConnectorM/KafkaProcessor
+- DataConnectorM/AvroToCsvUtilityMain
+- DataConnectorM/OlympusDataProcessor
+- DataConnectorM/HDFSWrite
+- DataConnectorM/DataConnectorMain
+- DataConnectorM/APIConnectorMain
+- commonFunctions/HelperFunctions
+- commonFunctions/AppConfig
+
+Do not make code changes yet.
+
+Provide evidence-based findings with exact:
+- file name
+- class name
+- method name
+- relevant line or code snippet
+
+Answer the following:
+
+1. Which class reads the Kafka message?
+2. Where are the first 5 Confluent bytes handled?
+3. Is the schema ID extracted from bytes 2–5?
+4. Which class calls Schema Registry?
+5. How is the schema response parsed?
+6. Where is from_avro called?
+7. Is the 5-byte prefix removed before from_avro?
+8. Is there any risk that the prefix is removed twice or not removed at all?
+9. What DataFrame schema is produced after Avro decoding?
+10. Is the decoded record converted to JSON?
+11. Where does flattening happen?
+12. Does the current flattening support:
+   - nested structs
+   - arrays of primitive values
+   - arrays of records
+   - maps
+   - nullable union fields
+   - decimals
+   - dates
+   - timestamps
+13. Are CSV headers taken dynamically from the Schema Registry schema or hardcoded?
+14. Is field order preserved from the Avro schema?
+15. Where is the final CSV written?
+16. Is CSV header=true enabled?
+17. How are null values, delimiters, quotes, escape characters, and multiline values handled?
+18. What happens when the schema version changes?
+19. What happens when the schema cannot be fetched or the Avro payload cannot be decoded?
+20. Are failed records logged, skipped, retried, or written to a dead-letter location?
+
+At the end, provide:
+
+A. Current confirmed end-to-end flow  
+B. Missing or incomplete functionality  
+C. Production risks  
+D. Exact classes and methods that require changes  
+E. A sequence diagram in text form  
+F. A final conclusion using one of these statuses:
+
+- FULLY IMPLEMENTED
+- PARTIALLY IMPLEMENTED
+- NOT IMPLEMENTED
+- CANNOT CONFIRM
+
+Do not assume behavior based only on class names. Confirm everything from the actual implementation.
