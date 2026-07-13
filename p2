@@ -81,3 +81,61 @@ F. A final conclusion using one of these statuses:
 - CANNOT CONFIRM
 
 Do not assume behavior based only on class names. Confirm everything from the actual implementation.
+
+
+
+
+
+
+
+
+
+Based on the code analysis already completed, prepare a minimal production-safe implementation plan for completing the Kafka Avro-to-CSV flow.
+
+Do not modify code yet.
+
+The required target flow is:
+
+Kafka binary message
+→ validate Confluent magic byte
+→ extract schema ID from bytes 2–5 using big-endian integer parsing
+→ fetch and cache the matching schema from Schema Registry
+→ remove exactly the first 5 bytes
+→ decode the remaining payload with from_avro
+→ recursively flatten nested structs
+→ define explicit handling for arrays and maps
+→ preserve deterministic column names and ordering
+→ write CSV with configurable header, delimiter, quote, escape, null and multiline options
+→ route malformed records to a failed-record or DLQ path
+→ emit counts and operational metrics
+
+Review these classes:
+
+- KafkaProcessor.scala
+- DataConnectorMain.scala
+- AvroConversionUtility.scala
+- HelperFunctions.scala
+- AppConfig.scala
+- HDFSWrite.scala
+
+Provide:
+
+1. The exact class where the production Avro decode flow should be integrated.
+2. Which existing code should be reused from DataConnectorMain.
+3. Which code should be moved into reusable utility classes.
+4. New methods required, including proposed method signatures.
+5. Configuration properties required.
+6. Recursive flattening rules for:
+   - structs
+   - arrays of primitives
+   - arrays of structs
+   - maps
+   - nullable fields
+   - decimal, date and timestamp logical types
+7. Schema Registry caching strategy.
+8. Record-level failure handling strategy.
+9. Unit and integration test cases.
+10. A file-by-file change plan.
+
+Avoid a broad refactor. Recommend the smallest safe change that integrates with the current production KafkaProcessor path.
+
