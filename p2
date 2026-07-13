@@ -139,3 +139,41 @@ Provide:
 
 Avoid a broad refactor. Recommend the smallest safe change that integrates with the current production KafkaProcessor path.
 
+
+
+
+
+
+Implement Phase 1 only.
+
+Scope:
+1. Add Confluent header parsing utilities.
+2. Validate:
+   - value is not null
+   - payload length is at least 5 bytes
+   - magic byte equals 0
+3. Extract schema ID from bytes 1–4 using big-endian integer parsing.
+4. Strip exactly the first 5 bytes.
+5. Add unit tests for:
+   - valid message
+   - null value
+   - payload shorter than 5 bytes
+   - invalid magic byte
+   - schema ID big-endian correctness
+   - payload extraction correctness
+
+Implementation location:
+- Prefer AvroConversionUtility.scala or create KafkaAvroDecodeUtility.scala if separation is cleaner.
+- Do not modify KafkaProcessor production flow yet.
+- Do not implement Schema Registry calls, from_avro decoding, flattening, or CSV writing in this phase.
+- Do not change existing behavior.
+
+Provide:
+- exact files changed
+- code diff
+- explanation of byte indexes
+- test results
+- any dependency changes
+
+Use Scala and library versions already present in the repository. Do not introduce new dependencies unless unavoidable.
+
