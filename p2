@@ -747,3 +747,157 @@ object KafkaBootstrapBatchSmokeTest {
   }
 }
 
+
+
+
+
+class AvroJsonCsvUtilityLocalBinaryTest
+    extends AnyFunSuite
+    with BeforeAndAfterAll {
+
+  private var spark: SparkSession = _
+
+  override protected def beforeAll(): Unit = {
+    spark = SparkSession.builder()
+      .appName("AvroJsonCsvUtilityLocalBinaryTest")
+      .master("local[*]")
+      .config("spark.ui.enabled", "false")
+      .getOrCreate()
+
+    spark.sparkContext.setLogLevel("WARN")
+  }
+
+  test("binary file should decode, flatten and write CSV") {
+
+    val inputFile =
+      sys.env("AVRO_BINARY_FILE")
+
+    val outputPath =
+      sys.env.getOrElse(
+        "CSV_OUTPUT_PATH",
+        "target/avro-json-csv-output"
+      )
+
+    /*
+     * STEP 1:
+     * Read the .bin file as Array[Byte].
+     */
+    val binaryDF =
+      spark.read
+        .format("binaryFile")
+        .load(inputFile)
+        .select(
+          col("content").as("value")
+        )
+
+    println("[TEST] Binary file loaded")
+
+    /*
+     * STEP 2:
+     * Build the same structure normally received from Kafka.
+     */
+    val kafkaLikeDF =
+      binaryDF.select(
+        lit("local-file-test").as("topic"),
+        lit(1).as("partition"),
+        lit(1128572L).as("offset"),
+        current_timestamp().as("timestamp"),
+        lit(null).cast("binary").as("key"),
+        col("value")
+      )
+
+    kafkaLikeDF.printSchema()
+
+    /*
+     * STEP 3:
+     * Pass the binary value through the existing AvroDecodeUtility.
+     *
+     * Use the actual public method already present in your class.
+     */
+    println("[TEST] Starting Avro decoding")
+
+    val decodedDF =
+      AvroDecodeUtility.decode(
+        spark = spark,
+        kafkaDF = kafkaLikeDF
+      )
+
+    println("[TEST] Avro decoding completed")
+
+    decodedDF.printSchema()
+    decodedDF.show(false)
+
+    /*
+     * Decoder output should contain:
+     *
+     * decoded_record: struct
+     */
+    assert(
+      decodedDF.columns.contains("decoded_record"),
+      "AvroDecodeUtility output must contain decoded_record"
+    )
+
+    /*
+     * STEP 4:
+     * Pass decoded_record through AvroJsonCsvUtility.
+     */
+    println("[TEST] Starting JSON flattening")
+
+    val flattenedDF =
+      AvroJsonCsvUtility.toFlattenedCsvReadyDF(
+        spark = spark,
+        decodeSuccessDF = decodedDF,
+        stripRootPrefixes = Seq.empty
+      )
+
+    println("[TEST] Flattening completed")
+
+    flattenedDF.printSchema()
+    flattenedDF.show(false)
+
+    /*
+     * STEP 5:
+     * Write the flattened DataFrame as CSV.
+     */
+    println("[TEST] Starting CSV write")
+
+    AvroJsonCsvUtility.writeCsv(
+      df = flattenedDF,
+      config = AvroJsonCsvUtility.CsvWriteConfig(
+        outputPath = outputPath,
+        mode = "overwrite",
+        header = "true",
+        delimiter = ",",
+        quote = "\"",
+        escape = "\"",
+        nullValue = "",
+        multiLine = "false",
+        stripRootPrefixes = Seq.empty
+      )
+    )
+
+    println("[TEST] CSV write completed")
+
+    /*
+     * STEP 6:
+     * Read the CSV back and validate it.
+     */
+    val resultDF =
+      spark.read
+        .option("header", "true")
+        .csv(outputPath)
+
+    resultDF.printSchema()
+    resultDF.show(false)
+
+    assert(resultDF.count() > 0)
+    assert(resultDF.columns.nonEmpty)
+  }
+
+  override protected def afterAll(): Unit = {
+    if (spark != null) {
+      spark.stop()
+    }
+  }
+}
+
