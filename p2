@@ -265,3 +265,485 @@ object AvroJsonCsvUtility {
   private def quoted(columnName: String): String =
     s"`${columnName.replace("`", "``")}`"
 }
+
+
+
+
+
+
+package com.citi.olympus.gru.dataconnector.util
+
+import java.util.{Collections, Properties}
+import java.util.concurrent.TimeUnit
+
+import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig, OffsetSpec}
+import org.apache.kafka.common.TopicPartition
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.{DataFrame, SparkSession}
+
+import scala.collection.JavaConverters._
+import scala.collection.mutable
+
+/**
+  * Bounded Kafka smoke test.
+  *
+  * It reads only the last N records from each partition and then exits. This is
+  * intentionally a batch read (`spark.read`), not a streaming read
+  * (`spark.readStream`), so the test does not run forever.
+  *
+  * Required arguments:
+  *   --bootstrap host1:9092,host2:9092
+  *   --topic topic-name
+  *
+  * Optional arguments:
+  *   --records-per-partition 20
+  *   --show-rows 50
+  *   --security-protocol SASL_SSL
+  *   --sasl-mechanism GSSAPI
+  *   --sasl-jaas-config-env KAFKA_SASL_JAAS_CONFIG
+  *   --ssl-truststore-location /path/to/truststore.jks
+  *   --ssl-truststore-password-env KAFKA_TRUSTSTORE_PASSWORD
+  *   --request-timeout-ms 30000
+  *   --kafka-option sasl.kerberos.service.name=kafka
+  *
+  * Credentials are read from environment variables rather than command-line
+  * arguments so they are not exposed in the process list.
+  */
+object KafkaBootstrapBatchSmokeTest {
+
+  final case class Config(
+      bootstrapServers: String,
+      topic: String,
+      recordsPerPartition: Long = 20L,
+      showRows: Int = 50,
+      securityProtocol: Option[String] = None,
+      saslMechanism: Option[String] = None,
+      saslJaasConfig: Option[String] = None,
+      sslTruststoreLocation: Option[String] = None,
+      sslTruststorePassword: Option[String] = None,
+      requestTimeoutMs: Int = 30000,
+      extraKafkaOptions: Map[String, String] = Map.empty
+  )
+
+  private final case class PartitionRange(
+      partition: Int,
+      earliest: Long,
+      start: Long,
+      end: Long
+  ) {
+    def recordCount: Long = math.max(0L, end - start)
+  }
+
+  def main(args: Array[String]): Unit = {
+    val config = parseArgs(args)
+
+    val spark = SparkSession.builder()
+      .appName(s"KafkaBootstrapBatchSmokeTest-${config.topic}")
+      .getOrCreate()
+
+    spark.sparkContext.setLogLevel("WARN")
+
+    try {
+      val kafkaDF = readLastRecords(spark, config).cache()
+      val recordCount = kafkaDF.count()
+
+      println(s"Kafka connection succeeded for topic '${config.topic}'.")
+      println(s"Records returned by the bounded test: $recordCount")
+
+      kafkaDF
+        .select(
+          col("topic"),
+          col("partition"),
+          col("offset"),
+          col("timestamp"),
+          length(col("key")).as("key_bytes"),
+          length(col("value")).as("value_bytes"),
+          base64(col("key")).as("key_base64"),
+          sha2(col("value"), 256).as("value_sha256")
+        )
+        .orderBy(col("partition"), col("offset"))
+        .show(config.showRows, truncate = false)
+
+      if (recordCount == 0L) {
+        println(
+          "Connection and topic metadata lookup succeeded, but no records " +
+            "were available in the selected offset ranges."
+        )
+      }
+
+      kafkaDF.unpersist()
+    } finally {
+      spark.stop()
+    }
+  }
+
+  /**
+    * Returns a finite DataFrame containing at most the last N records from each
+    * partition as measured when the test starts.
+    */
+  def readLastRecords(
+      spark: SparkSession,
+      config: Config
+  ): DataFrame = {
+    require(config.bootstrapServers.trim.nonEmpty, "bootstrapServers is required")
+    require(config.topic.trim.nonEmpty, "topic is required")
+    require(config.recordsPerPartition > 0L, "recordsPerPartition must be greater than zero")
+
+    val ranges = discoverPartitionRanges(config)
+
+    if (ranges.isEmpty) {
+      throw new IllegalStateException(
+        s"Topic '${config.topic}' has no partitions"
+      )
+    }
+
+    println("Bounded Kafka ranges selected for this test:")
+    ranges.foreach { range =>
+      println(
+        s"  partition=${range.partition}, earliest=${range.earliest}, " +
+          s"start=${range.start}, end=${range.end}, " +
+          s"records=${range.recordCount}"
+      )
+    }
+
+    val assignJson = buildAssignJson(config.topic, ranges)
+    val startingOffsetsJson = buildOffsetsJson(config.topic, ranges, _.start)
+    val endingOffsetsJson = buildOffsetsJson(config.topic, ranges, _.end)
+
+    val reader = spark.read
+      .format("kafka")
+      .option("kafka.bootstrap.servers", config.bootstrapServers)
+      .option("assign", assignJson)
+      .option("startingOffsets", startingOffsetsJson)
+      .option("endingOffsets", endingOffsetsJson)
+      .option("failOnDataLoss", "false")
+
+    val configuredReader = sparkKafkaOptions(config).foldLeft(reader) {
+      case (currentReader, (key, value)) =>
+        currentReader.option(key, value)
+    }
+
+    configuredReader.load()
+  }
+
+  private def discoverPartitionRanges(
+      config: Config
+  ): Seq[PartitionRange] = {
+    val properties = adminClientProperties(config)
+    val adminClient = AdminClient.create(properties)
+
+    try {
+      val topicDescriptions = adminClient
+        .describeTopics(Collections.singletonList(config.topic))
+        .all()
+        .get(config.requestTimeoutMs.toLong, TimeUnit.MILLISECONDS)
+
+      val topicDescription = Option(topicDescriptions.get(config.topic))
+        .getOrElse(
+          throw new IllegalStateException(
+            s"Kafka did not return metadata for topic '${config.topic}'"
+          )
+        )
+
+      val topicPartitions = topicDescription.partitions().asScala
+        .map(info => new TopicPartition(config.topic, info.partition()))
+        .sortBy(_.partition())
+        .toSeq
+
+      val earliestRequest = topicPartitions
+        .map(topicPartition => topicPartition -> OffsetSpec.earliest())
+        .toMap
+        .asJava
+
+      val latestRequest = topicPartitions
+        .map(topicPartition => topicPartition -> OffsetSpec.latest())
+        .toMap
+        .asJava
+
+      val earliestOffsets = adminClient
+        .listOffsets(earliestRequest)
+        .all()
+        .get(config.requestTimeoutMs.toLong, TimeUnit.MILLISECONDS)
+        .asScala
+        .map { case (topicPartition, resultInfo) =>
+          topicPartition -> resultInfo.offset()
+        }
+        .toMap
+
+      val latestOffsets = adminClient
+        .listOffsets(latestRequest)
+        .all()
+        .get(config.requestTimeoutMs.toLong, TimeUnit.MILLISECONDS)
+        .asScala
+        .map { case (topicPartition, resultInfo) =>
+          topicPartition -> resultInfo.offset()
+        }
+        .toMap
+
+      topicPartitions.map { topicPartition =>
+        val earliest = earliestOffsets(topicPartition)
+        val end = latestOffsets(topicPartition)
+        val start = math.max(earliest, end - config.recordsPerPartition)
+
+        PartitionRange(
+          partition = topicPartition.partition(),
+          earliest = earliest,
+          start = start,
+          end = end
+        )
+      }
+    } finally {
+      adminClient.close()
+    }
+  }
+
+  private def adminClientProperties(config: Config): Properties = {
+    val properties = new Properties()
+
+    properties.put(
+      AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
+      config.bootstrapServers
+    )
+    properties.put(
+      AdminClientConfig.CLIENT_ID_CONFIG,
+      s"kafka-bootstrap-smoke-test-${System.currentTimeMillis()}"
+    )
+    properties.put(
+      AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG,
+      config.requestTimeoutMs.toString
+    )
+    properties.put(
+      AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG,
+      config.requestTimeoutMs.toString
+    )
+
+    config.securityProtocol.foreach(value =>
+      properties.put("security.protocol", value)
+    )
+    config.saslMechanism.foreach(value =>
+      properties.put("sasl.mechanism", value)
+    )
+    config.saslJaasConfig.foreach(value =>
+      properties.put("sasl.jaas.config", value)
+    )
+    config.sslTruststoreLocation.foreach(value =>
+      properties.put("ssl.truststore.location", value)
+    )
+    config.sslTruststorePassword.foreach(value =>
+      properties.put("ssl.truststore.password", value)
+    )
+
+    config.extraKafkaOptions.foreach {
+      case (rawKey, value) =>
+        properties.put(removeKafkaPrefix(rawKey), value)
+    }
+
+    properties
+  }
+
+  private def sparkKafkaOptions(config: Config): Map[String, String] = {
+    val options = mutable.LinkedHashMap.empty[String, String]
+
+    config.securityProtocol.foreach(value =>
+      options += "kafka.security.protocol" -> value
+    )
+    config.saslMechanism.foreach(value =>
+      options += "kafka.sasl.mechanism" -> value
+    )
+    config.saslJaasConfig.foreach(value =>
+      options += "kafka.sasl.jaas.config" -> value
+    )
+    config.sslTruststoreLocation.foreach(value =>
+      options += "kafka.ssl.truststore.location" -> value
+    )
+    config.sslTruststorePassword.foreach(value =>
+      options += "kafka.ssl.truststore.password" -> value
+    )
+
+    config.extraKafkaOptions.foreach {
+      case (rawKey, value) =>
+        options += addKafkaPrefix(rawKey) -> value
+    }
+
+    options.toMap
+  }
+
+  private def buildAssignJson(
+      topic: String,
+      ranges: Seq[PartitionRange]
+  ): String = {
+    val partitions = ranges.sortBy(_.partition).map(_.partition).mkString(",")
+    s"{\"${escapeJson(topic)}\":[$partitions]}"
+  }
+
+  private def buildOffsetsJson(
+      topic: String,
+      ranges: Seq[PartitionRange],
+      offsetSelector: PartitionRange => Long
+  ): String = {
+    val offsets = ranges
+      .sortBy(_.partition)
+      .map(range => s"\"${range.partition}\":${offsetSelector(range)}")
+      .mkString(",")
+
+    s"{\"${escapeJson(topic)}\":{$offsets}}"
+  }
+
+  private def escapeJson(value: String): String =
+    value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+
+  private def addKafkaPrefix(key: String): String =
+    if (key.startsWith("kafka.")) key else s"kafka.$key"
+
+  private def removeKafkaPrefix(key: String): String =
+    if (key.startsWith("kafka.")) key.substring("kafka.".length) else key
+
+  private def requiredEnvironmentVariable(name: String): String = {
+    sys.env.get(name).filter(_.nonEmpty).getOrElse(
+      throw new IllegalArgumentException(
+        s"Environment variable '$name' is not defined"
+      )
+    )
+  }
+
+  private def parseArgs(args: Array[String]): Config = {
+    var bootstrapServers: Option[String] = None
+    var topic: Option[String] = None
+    var recordsPerPartition = 20L
+    var showRows = 50
+    var securityProtocol: Option[String] = None
+    var saslMechanism: Option[String] = None
+    var saslJaasConfig: Option[String] = None
+    var sslTruststoreLocation: Option[String] = None
+    var sslTruststorePassword: Option[String] = None
+    var requestTimeoutMs = 30000
+    var extraKafkaOptions = Map.empty[String, String]
+
+    def argumentValue(index: Int, option: String): String = {
+      if (index + 1 >= args.length) {
+        throw new IllegalArgumentException(s"Missing value for $option")
+      }
+      args(index + 1)
+    }
+
+    var index = 0
+    while (index < args.length) {
+      args(index) match {
+        case "--bootstrap" =>
+          bootstrapServers = Some(argumentValue(index, "--bootstrap"))
+          index += 2
+
+        case "--topic" =>
+          topic = Some(argumentValue(index, "--topic"))
+          index += 2
+
+        case "--records-per-partition" =>
+          recordsPerPartition =
+            argumentValue(index, "--records-per-partition").toLong
+          index += 2
+
+        case "--show-rows" =>
+          showRows = argumentValue(index, "--show-rows").toInt
+          index += 2
+
+        case "--security-protocol" =>
+          securityProtocol =
+            Some(argumentValue(index, "--security-protocol"))
+          index += 2
+
+        case "--sasl-mechanism" =>
+          saslMechanism = Some(argumentValue(index, "--sasl-mechanism"))
+          index += 2
+
+        case "--sasl-jaas-config-env" =>
+          val environmentVariable =
+            argumentValue(index, "--sasl-jaas-config-env")
+          saslJaasConfig =
+            Some(requiredEnvironmentVariable(environmentVariable))
+          index += 2
+
+        case "--ssl-truststore-location" =>
+          sslTruststoreLocation =
+            Some(argumentValue(index, "--ssl-truststore-location"))
+          index += 2
+
+        case "--ssl-truststore-password-env" =>
+          val environmentVariable =
+            argumentValue(index, "--ssl-truststore-password-env")
+          sslTruststorePassword =
+            Some(requiredEnvironmentVariable(environmentVariable))
+          index += 2
+
+        case "--request-timeout-ms" =>
+          requestTimeoutMs =
+            argumentValue(index, "--request-timeout-ms").toInt
+          index += 2
+
+        case "--kafka-option" =>
+          val option = argumentValue(index, "--kafka-option")
+          val equalsIndex = option.indexOf('=')
+
+          if (equalsIndex <= 0) {
+            throw new IllegalArgumentException(
+              "--kafka-option must use key=value format"
+            )
+          }
+
+          val key = option.substring(0, equalsIndex)
+          val value = option.substring(equalsIndex + 1)
+          extraKafkaOptions += key -> value
+          index += 2
+
+        case "--help" | "-h" =>
+          printUsageAndExit()
+
+        case unknown =>
+          throw new IllegalArgumentException(
+            s"Unknown argument '$unknown'. Use --help for usage."
+          )
+      }
+    }
+
+    Config(
+      bootstrapServers = bootstrapServers.getOrElse(
+        throw new IllegalArgumentException("--bootstrap is required")
+      ),
+      topic = topic.getOrElse(
+        throw new IllegalArgumentException("--topic is required")
+      ),
+      recordsPerPartition = recordsPerPartition,
+      showRows = showRows,
+      securityProtocol = securityProtocol,
+      saslMechanism = saslMechanism,
+      saslJaasConfig = saslJaasConfig,
+      sslTruststoreLocation = sslTruststoreLocation,
+      sslTruststorePassword = sslTruststorePassword,
+      requestTimeoutMs = requestTimeoutMs,
+      extraKafkaOptions = extraKafkaOptions
+    )
+  }
+
+  private def printUsageAndExit(): Nothing = {
+    println(
+      """
+        |Usage:
+        |  KafkaBootstrapBatchSmokeTest \\
+        |    --bootstrap host1:9092,host2:9092 \\
+        |    --topic topic-name \\
+        |    [--records-per-partition 20] \\
+        |    [--show-rows 50] \\
+        |    [--security-protocol SASL_SSL] \\
+        |    [--sasl-mechanism GSSAPI] \\
+        |    [--sasl-jaas-config-env KAFKA_SASL_JAAS_CONFIG] \\
+        |    [--ssl-truststore-location /path/to/truststore.jks] \\
+        |    [--ssl-truststore-password-env KAFKA_TRUSTSTORE_PASSWORD] \\
+        |    [--request-timeout-ms 30000] \\
+        |    [--kafka-option key=value]
+        |""".stripMargin
+    )
+    sys.exit(0)
+  }
+}
+
