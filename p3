@@ -1,50 +1,759 @@
-Create a separate Kafka Avro application using two classes:
+package com.citi.olympus.gru.dataconnector.util
 
-1. KafkaAvroProcessorMain.scala
-2. KafkaAvroProcessor.scala
+import com.fasterxml.jackson.databind.ObjectMapper
+import org.apache.spark.sql.api.java.UDF1
+import org.apache.spark.sql.avro.functions.from_avro
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.{Column, DataFrame, Row, SparkSession}
 
-Do not modify the existing DataConnectorMain or regular KafkaProcessor behavior.
+import java.net.{HttpURLConnection, URL}
+import java.nio.charset.StandardCharsets
+import java.util.Locale
+import scala.annotation.tailrec
+import scala.collection.mutable.ArrayBuffer
+import scala.io.Source
+import scala.util.control.NonFatal
 
-Responsibilities:
+/**
+ * Avro processing functions used by the Kafka Avro flow.
+ *
+ * Responsibilities:
+ *   1. Parse and remove the Confluent wire-format header.
+ *   2. Resolve Avro schemas from Schema Registry.
+ *   3. Decode Avro payloads.
+ *   4. Flatten decoded records into a CSV-ready DataFrame.
+ *   5. Write the CSV-ready DataFrame.
+ *
+ * Kafka reading, record routing, failed-record HDFS paths, and offset commits
+ * remain the responsibility of KafkaProcessor/KafkaAvroProcessor.
+ */
+object AvroProcessingUtility {
 
-KafkaAvroProcessorMain
-- Follow the same package, logging, argument parsing, property loading, SparkSession initialization, Kafka configuration, Kafka batch reading and offset-commit pattern used by DataConnectorMain.
-- Create and stop the SparkSession.
-- Read only the dedicated Avro Kafka topic.
-- Use the dedicated Avro consumer group.
-- Call KafkaAvroProcessor.processKafkaAvroBatch(...).
-- Commit Kafka offsets only after processKafkaAvroBatch completes successfully.
-- Do not place Avro decoding, flattening or HDFS-writing logic in the main class.
+  private val RequiredKafkaColumns = Seq(
+    "topic",
+    "partition",
+    "offset",
+    "timestamp",
+    "key",
+    "value"
+  )
 
-KafkaAvroProcessor
-- Accept SparkSession, Kafka DataFrame and merged properties.
-- Validate the required Kafka columns.
-- Handle an empty batch.
-- Reuse AvroDecodeUtility for header parsing and Schema Registry decoding.
-- Reuse AvroJsonCsvUtility for flattening and CSV writing.
-- Follow the existing HDFS-writing pattern already used by the current Avro flow.
-- Preserve Kafka metadata where required.
-- Propagate failures so the main class does not commit offsets.
-- Do not create another SparkSession.
-- Do not read Kafka or commit offsets.
-- Do not duplicate existing Avro or CSV utility logic.
+  private val RequiredValidHeaderColumns = Seq(
+    "topic",
+    "partition",
+    "offset",
+    "timestamp",
+    "key",
+    "schema_id",
+    "avro_payload"
+  )
 
-Before generating code:
-- Inspect DataConnectorMain.scala.
-- Inspect KafkaProcessor.scala.
-- Inspect AvroDecodeUtility.scala.
-- Inspect AvroJsonCsvUtility.scala.
-- Inspect HDFSWrite.scala.
-- Use the actual existing method signatures and imports.
-- Do not invent method names or property keys.
+  private val ParseHeaderSchema = StructType(
+    Seq(
+      StructField("header_valid", BooleanType, nullable = false),
+      StructField("schema_id", IntegerType, nullable = true),
+      StructField("avro_payload", BinaryType, nullable = true),
+      StructField("header_error", StringType, nullable = true)
+    )
+  )
 
-Generate the implementation in small checkpoints:
-1. Create both class shells.
-2. Add SparkSession and configuration loading to Main.
-3. Add dedicated Kafka topic reading.
-4. Add processKafkaAvroBatch skeleton.
-5. Move or reuse the existing Avro-processing flow.
-6. Add successful offset commit.
-7. Add tests.
+  private lazy val mapper = new ObjectMapper()
 
-After each checkpoint, show only the code changed and explain why.
+  private final case class SchemaLookupFailure(
+      message: String,
+      failBatch: Boolean
+  )
+
+  final case class SchemaRegistryConfig(
+      baseUrl: String,
+      connectTimeoutMs: Int = 10000,
+      readTimeoutMs: Int = 30000
+  ) {
+    require(
+      Option(baseUrl).exists(_.trim.nonEmpty),
+      "Schema Registry base URL must not be blank"
+    )
+    require(connectTimeoutMs > 0, "connectTimeoutMs must be greater than zero")
+    require(readTimeoutMs > 0, "readTimeoutMs must be greater than zero")
+
+    val normalizedBaseUrl: String = baseUrl.trim.stripSuffix("/")
+  }
+
+  final case class CsvWriteConfig(
+      outputPath: String,
+      mode: String,
+      header: String,
+      delimiter: String,
+      quote: String,
+      escape: String,
+      nullValue: String,
+      multiLine: String,
+      stripRootPrefixes: Seq[String]
+  ) {
+    require(
+      Option(outputPath).exists(_.trim.nonEmpty),
+      "CSV output path must not be blank"
+    )
+    require(
+      Option(mode).exists(_.trim.nonEmpty),
+      "CSV write mode must not be blank"
+    )
+  }
+
+  /**
+   * Parses the five-byte Confluent header and returns:
+   *   - valid records with schema_id and avro_payload
+   *   - invalid records with header_error
+   */
+  def parseHeaders(kafkaBatchDF: DataFrame): (DataFrame, DataFrame) = {
+    requireColumns(kafkaBatchDF, RequiredKafkaColumns, "Kafka batch")
+
+    val parsedDF = kafkaBatchDF
+      .withColumn(
+        "parsed_header",
+        parseConfluentHeaderUdf(col("value"))
+      )
+      .withColumn("header_valid", col("parsed_header.header_valid"))
+      .withColumn("schema_id", col("parsed_header.schema_id"))
+      .withColumn("avro_payload", col("parsed_header.avro_payload"))
+      .withColumn("header_error", col("parsed_header.header_error"))
+
+    val validHeaderDF = parsedDF
+      .filter(col("header_valid") && col("schema_id").isNotNull)
+      .select(
+        col("topic"),
+        col("partition"),
+        col("offset"),
+        col("timestamp"),
+        col("key"),
+        col("schema_id"),
+        col("avro_payload")
+      )
+
+    val invalidHeaderDF = parsedDF
+      .filter(!col("header_valid") || col("schema_id").isNull)
+      .select(
+        col("topic"),
+        col("partition"),
+        col("offset"),
+        col("timestamp"),
+        col("key"),
+        col("header_error")
+      )
+
+    (validHeaderDF, invalidHeaderDF)
+  }
+
+  /**
+   * Preferred production method.
+   *
+   * Each schema ID is decoded and flattened independently before the results
+   * are unioned. This avoids trying to union incompatible nested
+   * decoded_record structs when a batch contains more than one schema version.
+   *
+   * Returns:
+   *   - CSV-ready successful records
+   *   - decode/schema-registry failures
+   */
+  def decodeAndFlattenWithSchemaRegistry(
+      validHeaderDF: DataFrame,
+      schemaRegistryConfig: SchemaRegistryConfig,
+      stripRootPrefixes: Seq[String]
+  ): (DataFrame, DataFrame) = {
+    requireColumns(
+      validHeaderDF,
+      RequiredValidHeaderColumns,
+      "Valid Avro-header batch"
+    )
+
+    val spark = validHeaderDF.sparkSession
+    val normalizedPrefixes = normalizeRootPrefixes(stripRootPrefixes)
+    val emptyDecodeFailureDF = createEmptyDecodeFailureDF(validHeaderDF)
+
+    if (validHeaderDF.rdd.isEmpty()) {
+      return (spark.emptyDataFrame, emptyDecodeFailureDF)
+    }
+
+    val schemaIds = validHeaderDF
+      .select(col("schema_id"))
+      .distinct()
+      .collect()
+      .flatMap(row => Option(row.getAs[Integer]("schema_id")).map(_.intValue()))
+      .sorted
+
+    val csvReadyFrames = ArrayBuffer.empty[DataFrame]
+    val decodeFailureFrames = ArrayBuffer.empty[DataFrame]
+
+    schemaIds.foreach { schemaId =>
+      fetchAvroSchema(schemaRegistryConfig, schemaId) match {
+        case Left(failure) if failure.failBatch =>
+          throw new IllegalStateException(failure.message)
+
+        case Left(failure) =>
+          decodeFailureFrames += schemaFailureDF(
+            validHeaderDF,
+            schemaId,
+            failure.message
+          )
+
+        case Right(schemaString) =>
+          val decodedForSchemaDF = validHeaderDF
+            .filter(col("schema_id") === lit(schemaId))
+            .withColumn(
+              "decoded_record",
+              from_avro(
+                col("avro_payload"),
+                schemaString,
+                Map("mode" -> "PERMISSIVE")
+              )
+            )
+            .withColumn(
+              "decode_error",
+              when(
+                col("decoded_record").isNull,
+                lit(s"from_avro returned null for schema_id=$schemaId")
+              ).otherwise(lit(null).cast(StringType))
+            )
+
+          decodeFailureFrames += decodedForSchemaDF
+            .filter(col("decoded_record").isNull)
+            .select(
+              col("topic"),
+              col("partition"),
+              col("offset"),
+              col("timestamp"),
+              col("key"),
+              col("schema_id"),
+              col("decode_error")
+            )
+
+          val decodeSuccessForSchemaDF = decodedForSchemaDF
+            .filter(col("decoded_record").isNotNull)
+            .select(
+              col("topic"),
+              col("partition"),
+              col("offset"),
+              col("timestamp"),
+              col("key"),
+              col("schema_id"),
+              col("decoded_record")
+            )
+
+          csvReadyFrames += toFlattenedCsvReadyDF(
+            decodeSuccessForSchemaDF,
+            normalizedPrefixes
+          )
+      }
+    }
+
+    val csvReadyDF = alignAndUnionCsvFrames(csvReadyFrames.toSeq, spark)
+
+    val decodeFailedDF = decodeFailureFrames
+      .reduceOption(_.unionByName(_))
+      .getOrElse(emptyDecodeFailureDF)
+
+    (csvReadyDF, decodeFailedDF)
+  }
+
+  /**
+   * Flattens decoded_record into a CSV-ready DataFrame.
+   *
+   *   - Nested structs are flattened recursively (path joined with `_`).
+   *   - Array[Struct] columns are exploded (outer) and then flattened.
+   *   - Remaining primitive arrays and maps are serialized as JSON strings.
+   */
+  def toFlattenedCsvReadyDF(
+      decodeSuccessDF: DataFrame,
+      stripRootPrefixes: Seq[String]
+  ): DataFrame = {
+    requireColumn(decodeSuccessDF, "decoded_record", "Decoded Avro batch")
+
+    decodeSuccessDF.schema("decoded_record").dataType match {
+      case _: StructType =>
+      case other =>
+        throw new IllegalArgumentException(
+          s"Column 'decoded_record' must be StructType, but found $other"
+        )
+    }
+
+    val normalizedPrefixes = normalizeRootPrefixes(stripRootPrefixes)
+    val decodedStructDF = decodeSuccessDF.select(col("decoded_record.*"))
+    val flattenedDF = normalizeForCsv(decodedStructDF, normalizedPrefixes)
+    val csvReadyDF = convertComplexColumnsToJson(flattenedDF)
+
+    validateUniqueColumnNames(csvReadyDF.columns.toSeq)
+    csvReadyDF
+  }
+
+  /**
+   * Backward-compatible overload for existing callers that pass SparkSession.
+   * SparkSession is not required because it is already available from the
+   * DataFrame.
+   */
+  def toFlattenedCsvReadyDF(
+      spark: SparkSession,
+      decodeSuccessDF: DataFrame,
+      stripRootPrefixes: Seq[String]
+  ): DataFrame = {
+    toFlattenedCsvReadyDF(decodeSuccessDF, stripRootPrefixes)
+  }
+
+  def writeCsv(df: DataFrame, config: CsvWriteConfig): Unit = {
+    validateUniqueColumnNames(df.columns.toSeq)
+
+    if (df.rdd.isEmpty()) {
+      return
+    }
+
+    val orderedColumns = df.columns.map(name => col(quoteIdentifier(name)))
+
+    df.select(orderedColumns: _*)
+      .write
+      .mode(config.mode.trim)
+      .option("header", config.header)
+      .option("sep", config.delimiter)
+      .option("quote", config.quote)
+      .option("escape", config.escape)
+      .option("nullValue", config.nullValue)
+      .option("multiLine", config.multiLine)
+      .csv(config.outputPath.trim)
+  }
+
+  private val parseConfluentHeaderUdf = udf(
+    new UDF1[Array[Byte], Row] {
+      override def call(value: Array[Byte]): Row = {
+        try {
+          KafkaAvroDecodeUtility.parseAndStrip(value) match {
+            case Right(parsed) =>
+              Row(
+                true,
+                Int.box(parsed.schemaId),
+                parsed.avroPayload,
+                null
+              )
+
+            case Left(error) =>
+              Row(false, null, null, error.reason)
+          }
+        } catch {
+          case NonFatal(exception) =>
+            Row(
+              false,
+              null,
+              null,
+              s"Unexpected Confluent-header parsing failure: ${safeMessage(exception)}"
+            )
+        }
+      }
+    },
+    ParseHeaderSchema
+  )
+
+  private def fetchAvroSchema(
+      config: SchemaRegistryConfig,
+      schemaId: Int
+  ): Either[SchemaLookupFailure, String] = {
+    val endpoint = s"${config.normalizedBaseUrl}/schemas/ids/$schemaId"
+    var connection: HttpURLConnection = null
+
+    try {
+      connection = new URL(endpoint)
+        .openConnection()
+        .asInstanceOf[HttpURLConnection]
+
+      connection.setRequestMethod("GET")
+      connection.setConnectTimeout(config.connectTimeoutMs)
+      connection.setReadTimeout(config.readTimeoutMs)
+      connection.setRequestProperty(
+        "Accept",
+        "application/vnd.schemaregistry.v1+json, application/json"
+      )
+
+      val responseCode = connection.getResponseCode
+      val responseBody =
+        if (responseCode >= 200 && responseCode < 300) {
+          readResponseBody(connection.getInputStream)
+        } else {
+          Option(connection.getErrorStream)
+            .map(readResponseBody)
+            .getOrElse("")
+        }
+
+      if (responseCode < 200 || responseCode >= 300) {
+        val registryErrorCode = extractRegistryErrorCode(responseBody)
+        val schemaDoesNotExist =
+          registryErrorCode.contains(40403) ||
+          registryErrorCode.contains(42203)
+        val failBatch = !schemaDoesNotExist
+
+        Left(
+          SchemaLookupFailure(
+            message =
+              s"Schema Registry request failed for schema_id=$schemaId, " +
+                s"status=$responseCode, endpoint=$endpoint, " +
+                s"response=${truncate(responseBody, 500)}",
+            failBatch = failBatch
+          )
+        )
+      } else {
+        val rootNode = mapper.readTree(responseBody)
+        val schemaNode = rootNode.get("schema")
+        val schemaTypeNode = rootNode.get("schemaType")
+        val schemaType =
+          if (schemaTypeNode == null || schemaTypeNode.asText().trim.isEmpty) {
+            "AVRO"
+          } else {
+            schemaTypeNode.asText().trim.toUpperCase(Locale.ROOT)
+          }
+
+        if (schemaType != "AVRO") {
+          Left(
+            SchemaLookupFailure(
+              message =
+                s"Schema id=$schemaId is registered as schemaType=$schemaType, not AVRO",
+              failBatch = false
+            )
+          )
+        } else if (
+          schemaNode == null ||
+          schemaNode.asText().trim.isEmpty
+        ) {
+          Left(
+            SchemaLookupFailure(
+              message =
+                s"Schema Registry response is missing 'schema' for schema_id=$schemaId",
+              failBatch = false
+            )
+          )
+        } else {
+          Right(schemaNode.asText())
+        }
+      }
+    } catch {
+      case NonFatal(exception) =>
+        Left(
+          SchemaLookupFailure(
+            message =
+              s"Unable to retrieve schema_id=$schemaId from $endpoint: " +
+                safeMessage(exception),
+            failBatch = true
+          )
+        )
+    } finally {
+      if (connection != null) {
+        connection.disconnect()
+      }
+    }
+  }
+
+  private def readResponseBody(inputStream: java.io.InputStream): String = {
+    val source = Source.fromInputStream(
+      inputStream,
+      StandardCharsets.UTF_8.name()
+    )
+    try source.mkString
+    finally source.close()
+  }
+
+  private def schemaFailureDF(
+      validHeaderDF: DataFrame,
+      schemaId: Int,
+      errorMessage: String
+  ): DataFrame = {
+    validHeaderDF
+      .filter(col("schema_id") === lit(schemaId))
+      .select(
+        col("topic"),
+        col("partition"),
+        col("offset"),
+        col("timestamp"),
+        col("key"),
+        col("schema_id"),
+        lit(errorMessage).cast(StringType).as("decode_error")
+      )
+  }
+
+  private def createEmptyDecodeFailureDF(
+      validHeaderDF: DataFrame
+  ): DataFrame = {
+    validHeaderDF
+      .select(
+        col("topic"),
+        col("partition"),
+        col("offset"),
+        col("timestamp"),
+        col("key"),
+        col("schema_id"),
+        lit(null).cast(StringType).as("decode_error")
+      )
+      .limit(0)
+  }
+
+  /**
+   * Flatten structs, then explode Array[Struct] and re-flatten until only
+   * primitives, primitive arrays, and maps remain.
+   */
+  @tailrec
+  private def normalizeForCsv(
+      df: DataFrame,
+      stripRootPrefixes: Seq[String]
+  ): DataFrame = {
+    val flattenedStructDF = flattenStructColumns(df, stripRootPrefixes)
+
+    findFirstArrayOfStructColumn(flattenedStructDF) match {
+      case Some(columnName) =>
+        val explodedDF = flattenedStructDF.withColumn(
+          columnName,
+          explode_outer(col(quoteIdentifier(columnName)))
+        )
+        normalizeForCsv(explodedDF, stripRootPrefixes)
+
+      case None =>
+        flattenedStructDF
+    }
+  }
+
+  private def findFirstArrayOfStructColumn(df: DataFrame): Option[String] = {
+    df.schema.fields.collectFirst {
+      case StructField(fieldName, ArrayType(_: StructType, _), _, _) =>
+        fieldName
+    }
+  }
+
+  private def flattenStructColumns(
+      df: DataFrame,
+      stripRootPrefixes: Seq[String]
+  ): DataFrame = {
+
+    def flattenOnce(currentDF: DataFrame): DataFrame = {
+      val projectedColumns = currentDF.schema.fields.flatMap { field =>
+        field.dataType match {
+          case structType: StructType =>
+            structType.fields.map { child =>
+              val rawName = joinColumnPath(field.name, child.name)
+              val normalizedName = normalizeColumnPath(
+                rawName,
+                stripRootPrefixes
+              )
+
+              col(
+                s"${quoteIdentifier(field.name)}.${quoteIdentifier(child.name)}"
+              ).as(normalizedName)
+            }
+
+          case _ =>
+            Seq(col(quoteIdentifier(field.name)))
+        }
+      }
+
+      val flattenedOnceDF = currentDF.select(projectedColumns: _*)
+      validateUniqueColumnNames(flattenedOnceDF.columns.toSeq)
+      flattenedOnceDF
+    }
+
+    @tailrec
+    def loop(currentDF: DataFrame): DataFrame = {
+      val containsStruct = currentDF.schema.fields.exists {
+        field => field.dataType.isInstanceOf[StructType]
+      }
+
+      if (containsStruct) {
+        loop(flattenOnce(currentDF))
+      } else {
+        currentDF
+      }
+    }
+
+    loop(df)
+  }
+
+  /**
+   * After normalizeForCsv there must be no StructType or Array[Struct].
+   * Primitive arrays and maps are kept as JSON text in a single CSV cell.
+   * Scalar strings and other primitives are left unchanged.
+   */
+  private def convertComplexColumnsToJson(df: DataFrame): DataFrame = {
+    val projectedColumns: Seq[Column] = df.schema.fields.map { field =>
+      field.dataType match {
+        case _: StructType =>
+          throw new IllegalStateException(
+            s"Struct column '${field.name}' remains after flattening"
+          )
+
+        case ArrayType(_: StructType, _) =>
+          throw new IllegalStateException(
+            s"Array[Struct] column '${field.name}' remains after flattening"
+          )
+
+        case _: ArrayType | _: MapType =>
+          to_json(col(quoteIdentifier(field.name))).as(field.name)
+
+        case _ =>
+          col(quoteIdentifier(field.name))
+      }
+    }
+
+    df.select(projectedColumns: _*)
+  }
+
+  /**
+   * Aligns flattened schema-version DataFrames before unioning them.
+   *
+   * Missing columns are added as null. If the same column has different data
+   * types across schema versions, all versions of that column are cast to
+   * string, which is safe for the final CSV output.
+   */
+  private def alignAndUnionCsvFrames(
+      frames: Seq[DataFrame],
+      spark: SparkSession
+  ): DataFrame = {
+    if (frames.isEmpty) {
+      return spark.emptyDataFrame
+    }
+
+    val orderedColumnNames = frames.foldLeft(Vector.empty[String]) {
+      case (current, frame) =>
+        frame.columns.foldLeft(current) { (columns, columnName) =>
+          if (columns.contains(columnName)) columns else columns :+ columnName
+        }
+    }
+
+    validateUniqueColumnNames(orderedColumnNames)
+
+    val targetTypes: Map[String, DataType] = orderedColumnNames.map { name =>
+      val dataTypes = frames.flatMap { frame =>
+        frame.schema.fields
+          .find(_.name == name)
+          .map(_.dataType)
+      }.distinct
+
+      val targetType =
+        if (dataTypes.size == 1) dataTypes.head
+        else StringType
+
+      name -> targetType
+    }.toMap
+
+    val alignedFrames = frames.map { frame =>
+      val fieldsByName = frame.schema.fields.map(field => field.name -> field).toMap
+
+      val projectedColumns = orderedColumnNames.map { name =>
+        val targetType = targetTypes(name)
+
+        fieldsByName.get(name) match {
+          case Some(field) if field.dataType == targetType =>
+            col(quoteIdentifier(name)).as(name)
+
+          case Some(_) =>
+            col(quoteIdentifier(name)).cast(targetType).as(name)
+
+          case None =>
+            lit(null).cast(targetType).as(name)
+        }
+      }
+
+      frame.select(projectedColumns: _*)
+    }
+
+    alignedFrames.reduce(_.unionByName(_))
+  }
+
+  private def normalizeRootPrefixes(
+      stripRootPrefixes: Seq[String]
+  ): Seq[String] = {
+    Option(stripRootPrefixes)
+      .getOrElse(Seq.empty)
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .distinct
+  }
+
+  private def joinColumnPath(prefix: String, name: String): String = {
+    if (prefix == null || prefix.isEmpty) name
+    else s"${prefix}_${name}"
+  }
+
+  private def normalizeColumnPath(
+      path: String,
+      stripRootPrefixes: Seq[String]
+  ): String = {
+    val normalized = stripRootPrefixes.foldLeft(path) { (current, root) =>
+      val currentLower = current.toLowerCase(Locale.ROOT)
+      val rootLower = root.toLowerCase(Locale.ROOT)
+
+      if (currentLower == rootLower) {
+        ""
+      } else if (currentLower.startsWith(rootLower + "_")) {
+        current.substring(root.length + 1)
+      } else {
+        current
+      }
+    }
+
+    if (normalized == null || normalized.isEmpty) path else normalized
+  }
+
+  private def requireColumns(
+      df: DataFrame,
+      requiredColumns: Seq[String],
+      dataFrameName: String
+  ): Unit = {
+    val available = df.columns.toSet
+    val missing = requiredColumns.filterNot(available.contains)
+
+    require(
+      missing.isEmpty,
+      s"$dataFrameName is missing required columns: ${missing.mkString(", ")}"
+    )
+  }
+
+  private def requireColumn(
+      df: DataFrame,
+      columnName: String,
+      dataFrameName: String
+  ): Unit = {
+    requireColumns(df, Seq(columnName), dataFrameName)
+  }
+
+  private def validateUniqueColumnNames(columnNames: Seq[String]): Unit = {
+    val duplicates = columnNames
+      .groupBy(_.toLowerCase(Locale.ROOT))
+      .collect {
+        case (_, names) if names.size > 1 => names.distinct.mkString("/")
+      }
+      .toSeq
+      .sorted
+
+    require(
+      duplicates.isEmpty,
+      s"Duplicate CSV column names were produced: ${duplicates.mkString(", ")}"
+    )
+  }
+
+  private def quoteIdentifier(identifier: String): String = {
+    s"`${identifier.replace("`", "``")}`"
+  }
+
+  private def extractRegistryErrorCode(responseBody: String): Option[Int] = {
+    try {
+      val node = mapper.readTree(Option(responseBody).getOrElse(""))
+      Option(node.get("error_code")).map(_.asInt())
+    } catch {
+      case NonFatal(_) => None
+    }
+  }
+
+  private def safeMessage(exception: Throwable): String = {
+    Option(exception.getMessage)
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .getOrElse(exception.getClass.getName)
+  }
+
+  private def truncate(value: String, maxLength: Int): String = {
+    val safeValue = Option(value).getOrElse("")
+    if (safeValue.length <= maxLength) safeValue
+    else safeValue.substring(0, maxLength) + "..."
+  }
+}
