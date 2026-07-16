@@ -901,3 +901,248 @@ class AvroJsonCsvUtilityLocalBinaryTest
   }
 }
 
+
+
+
+
+
+
+Before writing any code, inspect the complete DataConnector project and answer
+the following questions.
+
+Do not modify or generate files yet.
+
+Our goal is to create a separate Spark application:
+
+KafkaAvroProcessorMain
+    → KafkaAvroProcessor
+    → existing AvroDecodeUtility
+    → existing AvroJsonCsvUtility
+    → CSV output
+
+The existing DataConnectorMain and regular KafkaProcessor must remain unchanged.
+
+Please inspect these files and any related callers:
+
+1. DataConnectorMain.scala
+2. KafkaProcessor.scala
+3. AvroDecodeUtility.scala
+4. AvroJsonCsvUtility.scala
+5. Existing SparkSession builder/helper
+6. Existing configuration loader
+7. Existing Kafka stream creation logic
+8. Existing Schema Registry integration
+9. Existing HDFS/CSV writer
+10. Existing tests for AvroDecodeUtility and AvroJsonCsvUtility
+
+Answer the following questions using the actual code.
+
+A. Avro input format
+--------------------
+1. Is the Kafka value expected to contain:
+   - one Confluent Avro serialized record,
+   - a complete Avro Object Container File,
+   - or another custom binary format?
+
+2. Does the payload include the Confluent five-byte prefix:
+   - magic byte,
+   - four-byte schema ID?
+
+3. Is the schema ID extracted from the Kafka payload?
+
+4. Is the Avro schema retrieved from Schema Registry, a file, configuration,
+   or another service?
+
+5. Does the current code support multiple schema IDs in the same Kafka batch?
+
+B. AvroDecodeUtility
+--------------------
+6. List all public methods in AvroDecodeUtility with their exact signatures.
+
+7. Which method should KafkaAvroProcessor call?
+
+8. What input does the decode method expect:
+   - DataFrame,
+   - Dataset[Row],
+   - Array[Byte],
+   - Kafka value column,
+   - schema string,
+   - schema ID,
+   - or file path?
+
+9. What does the method return?
+
+10. What is the schema of the returned DataFrame?
+
+11. Does it preserve Kafka metadata such as:
+    key, topic, partition, offset and timestamp?
+
+12. Does AvroDecodeUtility already:
+    - remove the Confluent header,
+    - retrieve the schema,
+    - decode Avro,
+    - convert the payload to JSON,
+    - or produce Spark columns?
+
+13. How does it handle null values, malformed records and unknown schema IDs?
+
+14. Does it fail the complete batch or return successful and failed records
+    separately?
+
+C. AvroJsonCsvUtility
+---------------------
+15. List all public methods in AvroJsonCsvUtility with their exact signatures.
+
+16. Which method performs flattening?
+
+17. Does the utility expect:
+    - decoded struct columns,
+    - a JSON string column,
+    - or a DataFrame with a specific root column?
+
+18. What root column name does it expect?
+
+19. Does it remove the root prefix from flattened column names?
+
+20. How does it handle:
+    - nested structs,
+    - arrays,
+    - maps,
+    - duplicate field names,
+    - null values,
+    - special characters in column names?
+
+21. Does it only prepare a CSV-ready DataFrame, or does it also write the CSV?
+
+22. Is there already a method that performs the complete flow:
+    Avro → JSON → flatten → CSV-ready DataFrame?
+
+D. Existing Kafka processing
+----------------------------
+23. Where is the existing Kafka DataFrame created?
+
+24. Is Kafka consumed through:
+    - readStream,
+    - read,
+    - foreachBatch,
+    - or another abstraction?
+
+25. List all Kafka security and connectivity options currently applied,
+    including SASL, SSL, IAM, truststore and bootstrap server configuration.
+
+26. Is there an existing reusable method that creates the Kafka reader?
+
+27. Can the new Avro processor reuse that method without changing regular
+    Kafka processing?
+
+28. What Kafka columns are available immediately after load?
+
+29. Is the Kafka key currently used? If yes, where and how?
+
+30. How are starting offsets, consumer group, topic and checkpoint path
+    configured?
+
+E. Spark application setup
+--------------------------
+31. How does DataConnectorMain create its SparkSession?
+
+32. Is there a reusable SparkSession builder that the new main should call?
+
+33. Which Spark, Scala and Java versions must the implementation support?
+
+34. Which Spark Avro dependencies are already available?
+
+35. Are there project-specific serializers, Hadoop settings, Hive support or
+    logging configurations that must also be enabled?
+
+F. Output handling
+------------------
+36. How does the project currently write CSV or HDFS output?
+
+37. Is there an existing writer utility that should be reused?
+
+38. What output directory structure is expected?
+
+39. Is output partitioned by:
+    recon ID, COB date, batch ID, topic, run date or another value?
+
+40. Is the CSV header written inside every part file, written separately,
+    or handled by an existing merger process?
+
+41. Is the expected output one CSV file or multiple Spark part files?
+
+42. Is there an existing file merge or rename step?
+
+G. Operational behavior
+-----------------------
+43. How does the current project log:
+    - batch start,
+    - record count,
+    - success,
+    - failure,
+    - and output path?
+
+44. Are audit records written to Oracle or another audit store?
+
+45. Which audit methods should the new Avro application call?
+
+46. How are exceptions handled in the existing main class?
+
+47. Should a malformed Avro record fail:
+    - only that record,
+    - the micro-batch,
+    - or the entire streaming query?
+
+48. What checkpointing and retry behavior is currently used?
+
+G. Testing
+----------
+49. What existing tests cover AvroDecodeUtility?
+
+50. What existing tests cover AvroJsonCsvUtility?
+
+51. What reusable test fixtures or sample Avro binary files are available?
+
+52. Do current tests use:
+    - local SparkSession,
+    - mocked Schema Registry,
+    - real Schema Registry,
+    - embedded Kafka,
+    - or static binary test files?
+
+53. What exact test framework and version are used?
+
+Required response format
+------------------------
+Return the result in these sections:
+
+1. Current regular Kafka flow
+2. Current Avro decode flow
+3. Current Avro-to-CSV flow
+4. Exact reusable methods and signatures
+5. Missing functionality
+6. Configuration values required for the new application
+7. Recommended new files
+8. Existing files that require modification
+9. Existing files that must remain unchanged
+10. Risks and open questions
+11. Proposed end-to-end call sequence
+12. Minimal implementation plan
+
+For the call sequence, provide something similar to:
+
+KafkaAvroProcessorMain.main
+    → existing configuration loader
+    → existing SparkSession builder
+    → KafkaAvroProcessor.start
+    → existing Kafka reader/helper
+    → foreachBatch
+    → AvroDecodeUtility.<actual method>
+    → AvroJsonCsvUtility.<actual method>
+    → existing output writer
+
+Use only methods and class names that actually exist in the repository.
+Do not invent method signatures.
+
+Do not generate implementation code until these questions have been answered.
+
