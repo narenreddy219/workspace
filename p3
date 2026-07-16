@@ -1,0 +1,50 @@
+Create a separate Kafka Avro application using two classes:
+
+1. KafkaAvroProcessorMain.scala
+2. KafkaAvroProcessor.scala
+
+Do not modify the existing DataConnectorMain or regular KafkaProcessor behavior.
+
+Responsibilities:
+
+KafkaAvroProcessorMain
+- Follow the same package, logging, argument parsing, property loading, SparkSession initialization, Kafka configuration, Kafka batch reading and offset-commit pattern used by DataConnectorMain.
+- Create and stop the SparkSession.
+- Read only the dedicated Avro Kafka topic.
+- Use the dedicated Avro consumer group.
+- Call KafkaAvroProcessor.processKafkaAvroBatch(...).
+- Commit Kafka offsets only after processKafkaAvroBatch completes successfully.
+- Do not place Avro decoding, flattening or HDFS-writing logic in the main class.
+
+KafkaAvroProcessor
+- Accept SparkSession, Kafka DataFrame and merged properties.
+- Validate the required Kafka columns.
+- Handle an empty batch.
+- Reuse AvroDecodeUtility for header parsing and Schema Registry decoding.
+- Reuse AvroJsonCsvUtility for flattening and CSV writing.
+- Follow the existing HDFS-writing pattern already used by the current Avro flow.
+- Preserve Kafka metadata where required.
+- Propagate failures so the main class does not commit offsets.
+- Do not create another SparkSession.
+- Do not read Kafka or commit offsets.
+- Do not duplicate existing Avro or CSV utility logic.
+
+Before generating code:
+- Inspect DataConnectorMain.scala.
+- Inspect KafkaProcessor.scala.
+- Inspect AvroDecodeUtility.scala.
+- Inspect AvroJsonCsvUtility.scala.
+- Inspect HDFSWrite.scala.
+- Use the actual existing method signatures and imports.
+- Do not invent method names or property keys.
+
+Generate the implementation in small checkpoints:
+1. Create both class shells.
+2. Add SparkSession and configuration loading to Main.
+3. Add dedicated Kafka topic reading.
+4. Add processKafkaAvroBatch skeleton.
+5. Move or reuse the existing Avro-processing flow.
+6. Add successful offset commit.
+7. Add tests.
+
+After each checkpoint, show only the code changed and explain why.
