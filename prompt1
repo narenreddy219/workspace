@@ -1,0 +1,348 @@
+We are analyzing the existing OneRec codebase for a new cross-date reconciliation feature.
+
+I will provide/open one OneRec component at a time.
+
+For this step, DO NOT modify any code.
+
+Your job is to analyze the provided component and identify:
+
+1. Which project/module this component belongs to.
+2. What responsibility this component has in the OneRec flow.
+3. What upstream component calls it.
+4. What downstream component it calls.
+5. How reconciliation date information is received, calculated, modified, and passed.
+6. Whether this component needs any change for the new feature.
+
+## New Feature
+
+We need OneRec to support reconciliation between different dates:
+
+Left = Tn
+Right = Tn + N
+
+Where N is metadata/configuration driven and could be 1, 2, 3, etc.
+
+Example:
+
+Right/current available date = 28
+Configured offset = 3
+
+Then:
+
+LeftDate = 25
+RightDate = 28
+
+Reconciliation should perform:
+
+Left(25) vs Right(28)
+
+Both datasets are assumed to already exist before reconciliation execution.
+
+This is NOT future-data lookup.
+
+Existing same-date reconciliations must continue to work unchanged.
+
+---
+
+# Analyze This Component
+
+For the component currently provided/opened in the workspace, perform the following analysis.
+
+## 1. Identify Project / Module
+
+Tell me:
+
+* project name
+* module name
+* package
+* source path
+* class/object name
+* main entry method(s)
+
+Also identify whether this is:
+
+* Scheduler
+* ReconLauncher
+* DataConnector
+* SourceConnector
+* DataMerger
+* CorePreProcessor
+* DataPreProcessor
+* ReconEngine
+* Audit
+* Metadata
+* or another OneRec component
+
+Do not infer only from the filename. Trace its imports, callers, configuration, and dependencies.
+
+---
+
+## 2. Identify Its Position in OneRec Flow
+
+Show:
+
+Upstream component
+->
+This component
+->
+Downstream component
+
+Identify actual classes/methods where possible.
+
+For example:
+
+ReconSchedule
+->
+ReconLauncher.launch(...)
+->
+DataConnector.process(...)
+
+Use the real implementation from the codebase.
+
+---
+
+## 3. Find Date Handling
+
+Search this project/module for all date-related fields that may influence reconciliation.
+
+Look for terms such as:
+
+effectiveDate
+effective_date
+cobDate
+cob_date
+businessDate
+business_date
+runDate
+processDate
+feedDate
+fileDate
+batchDate
+reconDate
+
+Also search for any equivalent naming used in this codebase.
+
+For every relevant occurrence identify:
+
+* class/file
+* method
+* field/variable
+* source of the value
+* how it is used
+* where it is passed next
+
+---
+
+## 4. Determine Whether One Common Date Is Assumed
+
+Check whether this component assumes:
+
+LeftDate = RightDate
+
+or whether one common:
+
+effectiveDate / COB date / business date
+
+is used for both sides.
+
+Look specifically for:
+
+* one date parameter passed to both feeds
+* one date used for both Left and Right SQL queries
+* common partition filtering
+* common file/path generation
+* common metadata lookup
+* common merge logic
+* common preprocessing date
+* common recon engine date
+
+Reference the exact code responsible.
+
+---
+
+## 5. Analyze Tn vs Tn+N Impact
+
+Determine whether this component can currently handle:
+
+LeftDate = 25
+RightDate = 28
+
+within the same recon execution.
+
+Classify the component as:
+
+NO CHANGE
+
+MINOR CHANGE
+
+MEDIUM CHANGE
+
+MAJOR CHANGE
+
+Explain why.
+
+Do not suggest changes simply because the feature is new. Only recommend a change if the current code requires it.
+
+---
+
+## 6. Proposed Change
+
+If a change is required, explain:
+
+Current behavior:
+
+<describe current implementation>
+
+Problem for Tn vs Tn+N:
+
+<explain why it fails>
+
+Required behavior:
+
+<describe what needs to change>
+
+Example:
+
+Current:
+One effectiveDate is used to resolve both Left and Right.
+
+Required:
+Left input must use resolved leftDate.
+Right input must use resolved rightDate.
+
+Do not write code yet.
+
+---
+
+## 7. Metadata Dependency
+
+Identify what metadata/configuration this component currently reads.
+
+Show:
+
+* metadata class
+* configuration object
+* DB table/query if visible
+* property names
+* relevant fields
+
+Determine whether this component is the correct place to read the new offset configuration, or whether the offset should already have been resolved by an upstream component.
+
+Do NOT create a new metadata design yet unless the existing code clearly shows where it belongs.
+
+---
+
+## 8. Inputs and Outputs
+
+Document what this component receives and produces.
+
+For example:
+
+Input:
+reconId
+effectiveDate
+feedId
+configuration
+
+Output:
+dataset
+path
+status
+next component parameters
+
+Highlight anything that would need to change to carry:
+
+leftDate
+rightDate
+configuredOffset
+
+---
+
+## 9. Dependencies / Other Projects Potentially Impacted
+
+If this component calls code from another project/module that also appears to depend on effectiveDate/COB date, identify it.
+
+Provide:
+
+Project/module
+Class
+Method
+Reason it may be impacted
+
+This is important because we need to identify all OneRec projects affected by the feature.
+
+---
+
+# Final Output
+
+Return the analysis in this format:
+
+## Component
+
+<Component name>
+
+## Project / Module
+
+<Project and module>
+
+## Source
+
+<File/package/class>
+
+## OneRec Responsibility
+
+<What this component does>
+
+## Upstream
+
+<Caller>
+
+## Downstream
+
+<Next component>
+
+## Current Date Handling
+
+<How dates work today>
+
+## Existing Single-Date Assumption
+
+<Yes/No and exact code reference>
+
+## Tn vs Tn+N Impact
+
+NO CHANGE / MINOR / MEDIUM / MAJOR
+
+## Required Design Change
+
+<Specific change, or "No change required">
+
+## Metadata Impact
+
+<What configuration is involved>
+
+## Other Projects / Components Impacted
+
+<List dependencies discovered from this component>
+
+## Code References
+
+List the exact:
+
+* file
+* class
+* method
+* important variable/configuration
+
+## Questions / Gaps
+
+Anything that cannot be determined from this project alone.
+
+Important instructions:
+
+* Do not modify code.
+* Do not generate implementation yet.
+* Do not guess other component behavior.
+* Base the findings only on the code available in the workspace.
+* If another project must be inspected to answer something, identify that project/component explicitly so we can analyze it next.
+* We are building a design-impact document from the actual codebase.
