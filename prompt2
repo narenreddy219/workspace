@@ -1,0 +1,375 @@
+Analyze the existing OneRec codebase for this specific new reconciliation requirement.
+
+DO NOT modify code.
+
+## Requirement
+
+For a configured reconciliation:
+
+Left feed date = T+1
+Right feed date = T+2
+
+Example:
+
+Base date T = 25
+
+Left input must use data for 26.
+
+Right input must use data for 27.
+
+The reconciliation must perform:
+
+Left(26) vs Right(27)
+
+Both datasets are assumed to already exist before the recon starts.
+
+This is not a future-data lookup.
+
+Existing normal reconciliations that use the same business/effective date must continue to work unchanged.
+
+---
+
+## What We Need From The Code Analysis
+
+Analyze these OneRec projects/components:
+
+1. ReconScheduler / ReconSchedule
+2. ReconLauncher
+3. ReconEngine3.0
+4. ReconDataMerger / DataMerger
+5. ReconDataMonitor / EOD Marker
+6. ReconDataConnector / DataConnector
+7. ReconDateFlip / DateFlip
+8. ReconDataPreProcessor / CorePreProcessor
+9. ReconAuditLogger / AuditLogger
+
+For each component:
+
+### 1. Current Behavior
+
+Identify how business date / effective date / COB date is currently determined.
+
+Show:
+
+* project
+* class
+* method
+* variable
+* metadata/configuration
+* SQL query
+* filename/path logic
+
+### 2. Same-Date Assumption
+
+Determine whether the component currently assumes:
+
+LeftDate = RightDate
+
+or uses one common:
+
+businessDate / effectiveDate / cobDate
+
+for both Left and Right.
+
+Reference exact code.
+
+### 3. T+1 / T+2 Impact
+
+Determine whether this component can support:
+
+LeftDate = T+1
+
+RightDate = T+2
+
+within the same recon execution.
+
+Classify as:
+
+NO CHANGE
+MINOR CHANGE
+MEDIUM CHANGE
+MAJOR CHANGE
+
+### 4. Required Change
+
+If impacted, explain:
+
+Current behavior
+Problem for T+1/T+2
+Required behavior
+
+Example:
+
+Current:
+One businessDate is passed to both Left and Right.
+
+Required:
+Left must resolve using T+1.
+Right must resolve using T+2.
+
+Do not write code.
+
+---
+
+# Specific Questions Per Component
+
+## ReconScheduler
+
+Check how Scheduler currently determines the date used to trigger recon.
+
+We need to understand whether it currently creates one `.ok` file for one business date.
+
+For this requirement determine whether Scheduler should work with:
+
+BaseDate = T
+
+LeftDate = T+1
+
+RightDate = T+2
+
+or whether Scheduler should only trigger once Right(T+2) is available and pass both resolved dates downstream.
+
+Identify exact changes.
+
+---
+
+## ReconLauncher
+
+Check how the launcher extracts the business date from the `.ok` file or scheduler request.
+
+Determine whether it currently passes one business date to ReconEngine.
+
+For this feature determine how it can carry:
+
+LeftBusinessDate = T+1
+
+RightBusinessDate = T+2
+
+without affecting existing recons.
+
+---
+
+## ReconEngine3.0
+
+Trace how BusinessDate is used when resolving Left and Right datasets.
+
+Find where the same date is passed to both sides.
+
+Determine what needs to change so the engine/input-resolution layer can receive:
+
+Left dataset for T+1
+
+Right dataset for T+2
+
+Preferred design:
+
+Left(T+1)
+
+-> existing matching engine
+/
+Right(T+2)
+
+Avoid putting date-offset calculation inside the core matching logic if possible.
+
+---
+
+## DataMerger
+
+Check whether merge grouping, partition selection and readiness use one common COB date.
+
+Determine whether it can independently prepare:
+
+Left partition for T+1
+
+Right partition for T+2
+
+for the same recon execution.
+
+If DataMerger is not involved in the final input path for this recon, say so explicitly.
+
+---
+
+## DataMonitor / EOD Marker
+
+Check whether EOD events are compared to one DateFlip/current business date and whether a single `.ok` file is generated.
+
+For this requirement determine which event should make the recon eligible.
+
+Likely scenario:
+
+Left T+1 already exists.
+
+When Right T+2 becomes available, recon becomes eligible.
+
+Validate this against the existing implementation.
+
+---
+
+## DataConnector
+
+Check whether individual feed files already retain their own business/COB dates.
+
+Determine whether DataConnector can already land:
+
+Left file for T+1
+
+and
+
+Right file for T+2
+
+without change.
+
+If yes, mark:
+
+NO CHANGE REQUIRED.
+
+---
+
+## DateFlip
+
+Check how T, previous date and next date are represented today.
+
+Determine whether existing DateFlip functionality can resolve:
+
+T+1
+
+T+2
+
+or whether recon-specific date relationship metadata is required elsewhere.
+
+Do not change DateFlip unless code analysis shows it is the correct place.
+
+---
+
+## CorePreProcessor
+
+Check whether CPP independently extracts and processes the date from each feed/file.
+
+Determine whether it can already produce:
+
+Left processed partition = T+1
+
+Right processed partition = T+2
+
+If yes:
+
+NO CHANGE REQUIRED.
+
+Also identify whether anything outside CPP incorrectly expects same-date completion.
+
+---
+
+## Audit
+
+Determine whether audit needs to store both:
+
+LeftDate = T+1
+
+RightDate = T+2
+
+for traceability.
+
+If current audit simply records supplied payload and does not drive execution, keep functional changes minimal.
+
+---
+
+# Cross-Project Trace
+
+Produce the current actual flow:
+
+DateFlip
+->
+Scheduler
+->
+.ok / trigger
+->
+ReconLauncher
+->
+ReconEngine
+->
+Left input
+Right input
+
+Show exactly where one business date is currently propagated.
+
+Then show the proposed flow for:
+
+T = 25
+
+LeftDate = 26
+
+RightDate = 27
+
+Example:
+
+BaseDate = 25
+|
+v
+Resolve date pair
+|
++--> LeftDate = 26
+|
++--> RightDate = 27
+|
+v
+Scheduler / Launcher
+|
+v
+Left input 26
+Right input 27
+|
+v
+Existing matching
+
+---
+
+# Metadata
+
+Inspect the current metadata model and determine the smallest change required to identify this recon as:
+
+LEFT_DATE_OFFSET = 1
+
+RIGHT_DATE_OFFSET = 2
+
+or an equivalent configuration using existing metadata.
+
+Do not create a new table unless necessary.
+
+---
+
+# Required Final Output
+
+Provide:
+
+Component | Current Date Behavior | T+1/T+2 Change Required | Impact | Exact Class/Method
+
+Then provide:
+
+1. Existing date flow
+2. Exact same-date assumptions
+3. Metadata/configuration change
+4. Scheduler impact
+5. Launcher impact
+6. Engine/input-resolution impact
+7. DataMerger impact
+8. DataMonitor impact
+9. DataConnector impact
+10. CPP impact
+11. DateFlip impact
+12. Audit impact
+13. Backward compatibility
+14. Exact classes/methods requiring change
+15. Components requiring no change
+
+Important:
+
+Do not implement.
+
+Do not generalize this requirement beyond what is needed.
+
+The immediate requirement is specifically:
+
+LEFT = T+1
+RIGHT = T+2
+
+Any recommendation must be supported by actual code references.
